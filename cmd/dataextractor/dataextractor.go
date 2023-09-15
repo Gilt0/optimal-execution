@@ -25,6 +25,7 @@ const (
 	DEFAULT_THROTTLE  = 5
 	DEFAULT_JSON_PATH = "./"
 	EMPTY             = ""
+	INTERPOLATION_NB  = 100
 )
 
 var (
@@ -76,19 +77,21 @@ type TradeResponse struct {
 }
 
 type AggregatedData struct {
-	LastTimestamp   uint64  `json:"last_timestamp"`
-	TotalAmount     float64 `json:"total_amount"`
-	TotalNumber     uint64  `json:"total_number"`
-	TotalVolume     float64 `json:"total_volume"`
-	BuyTotalAmount  float64 `json:"buy_total_amount"`
-	BuyTotalNumber  uint64  `json:"buy_total_number"`
-	BuyTotalVolume  float64 `json:"buy_total_volume"`
-	SellTotalAmount float64 `json:"sell_total_amount"`
-	SellTotalNumber uint64  `json:"sell_total_number"`
-	SellTotalVolume float64 `json:"sell_total_volume"`
-	MidPrice        float64 `json:"mid_price"`
-	TotalBidQty     float64 `json:"total_bid_qty"`
-	TotalAskQty     float64 `json:"total_ask_qty"`
+	LastTimestamp  uint64  `json:"last_timestamp"`
+	TotalAmount    float64 `json:"total_amount"`
+	TotalNumber    uint64  `json:"total_number"`
+	TotalVolume    float64 `json:"total_volume"`
+	BidTotalAmount float64 `json:"buy_total_amount"`
+	BidTotalNumber uint64  `json:"buy_total_number"`
+	BidTotalVolume float64 `json:"buy_total_volume"`
+	AskTotalAmount float64 `json:"sell_total_amount"`
+	AskTotalNumber uint64  `json:"sell_total_number"`
+	AskTotalVolume float64 `json:"sell_total_volume"`
+	MidPrice       float64 `json:"mid_price"`
+	BidTotalQty    float64 `json:"total_bid_qty"`
+	AskTotalQty    float64 `json:"total_ask_qty"`
+	MaxDeltaBid    float64 `json:"max_delta_bid"`
+	MaxDeltaAsk    float64 `json:"max_delta_ask"`
 }
 
 type OrderBookResponse struct {
@@ -165,6 +168,29 @@ type ExtendedOrderBookResponse struct {
 	CumAsks      []CumulatedProfile `json:"cumAsks"`
 }
 
+func interpolateCumulatedProfile(profile []CumulatedProfile) []CumulatedProfile {
+	interpolated := make([]CumulatedProfile, INTERPOLATION_NB+1)
+	const step = 1.0 / float64(INTERPOLATION_NB)
+	for i := 0; i <= INTERPOLATION_NB; i++ {
+		delta_i := float64(i) * step
+		if i == 0 {
+			interpolated[i] = CumulatedProfile{0, 0}
+		} else if i == INTERPOLATION_NB {
+			interpolated[i] = CumulatedProfile{1, 1}
+		} else {
+			for j := 0; j < len(profile)-1; j++ {
+				if profile[j][0] <= delta_i && profile[j+1][0] >= delta_i {
+					// Linear interpolation formula: y = y1 + (y2-y1) * (x-x1) / (x2-x1)
+					liquidity := profile[j][1] + (profile[j+1][1]-profile[j][1])*(delta_i-profile[j][0])/(profile[j+1][0]-profile[j][0])
+					interpolated[i] = CumulatedProfile{delta_i, liquidity}
+					break
+				}
+			}
+		}
+	}
+	return interpolated
+}
+
 func main() {
 	fmt.Println("symbol: ", symbol, "json_path: ", json_path, "throttle: ", throttle)
 	trades := make(chan *TradeResponse)
@@ -183,13 +209,13 @@ func main() {
 			aggData.TotalVolume += trade.Q
 			aggData.TotalNumber += 1
 			if trade.M {
-				aggData.BuyTotalAmount += trade.P * trade.Q
-				aggData.BuyTotalVolume += trade.Q
-				aggData.BuyTotalNumber += 1
+				aggData.BidTotalAmount += trade.P * trade.Q
+				aggData.BidTotalVolume += trade.Q
+				aggData.BidTotalNumber += 1
 			} else {
-				aggData.SellTotalAmount += trade.P * trade.Q
-				aggData.SellTotalVolume += trade.Q
-				aggData.SellTotalNumber += 1
+				aggData.AskTotalAmount += trade.P * trade.Q
+				aggData.AskTotalVolume += trade.Q
+				aggData.AskTotalNumber += 1
 			}
 		case <-ticker.C:
 			orderBook, err := fetchOrderBook()
@@ -211,38 +237,56 @@ func main() {
 			mid := (bids[0].Price + asks[0].Price) / 2
 			aggData.MidPrice = mid
 			// Compute total quantities
-			totalBidQty, totalAskQty := 0.0, 0.0
+			BidtotalQty, AsktotalQty := 0.0, 0.0
 			for _, bid := range bids {
-				totalBidQty += bid.Quantity
+				BidtotalQty += bid.Quantity
 			}
 			for _, ask := range asks {
-				totalAskQty += ask.Quantity
+				AsktotalQty += ask.Quantity
 			}
-			aggData.TotalBidQty = totalBidQty
-			aggData.TotalAskQty = totalAskQty
+			aggData.BidTotalQty = BidtotalQty
+			aggData.AskTotalQty = AsktotalQty
 			// Compute cumulated profiles
 			cumulatedBidLiquidity := 0.0
+			maxDeltaBid := 0.0
 			var cumBids []CumulatedProfile
 			for _, bid := range bids {
 				delta := mid - bid.Price
+				if delta > maxDeltaBid {
+					maxDeltaBid = delta
+				}
 				cumulatedBidLiquidity += bid.Quantity
-				normalizedLiquidity := cumulatedBidLiquidity / totalBidQty
+				normalizedLiquidity := cumulatedBidLiquidity / BidtotalQty
 				cumBids = append(cumBids, CumulatedProfile{delta, normalizedLiquidity})
 			}
 			cumulatedAskLiquidity := 0.0
+			maxDeltaAsk := 0.0
 			var cumAsks []CumulatedProfile
 			for _, ask := range asks {
 				delta := ask.Price - mid
+				if delta > maxDeltaAsk {
+					maxDeltaAsk = delta
+				}
 				cumulatedAskLiquidity += ask.Quantity
-				normalizedLiquidity := cumulatedAskLiquidity / totalAskQty
+				normalizedLiquidity := cumulatedAskLiquidity / AsktotalQty
 				cumAsks = append(cumAsks, CumulatedProfile{delta, normalizedLiquidity})
 			}
+			// Normalize deltas
+			for i := range cumBids {
+				cumBids[i][0] /= maxDeltaBid
+			}
+			for i := range cumAsks {
+				cumAsks[i][0] /= maxDeltaAsk
+			}
+			aggData.MaxDeltaBid = maxDeltaBid
+			aggData.MaxDeltaAsk = maxDeltaAsk
+			// Merge data
 			extendedOrderBook := ExtendedOrderBookResponse{
 				LastUpdateID: orderBook.LastUpdateID,
 				Bids:         orderBook.Bids,
 				Asks:         orderBook.Asks,
-				CumBids:      cumBids,
-				CumAsks:      cumAsks,
+				CumBids:      interpolateCumulatedProfile(cumBids),
+				CumAsks:      interpolateCumulatedProfile(cumAsks),
 			}
 			mergedData := struct {
 				OrderBook      ExtendedOrderBookResponse `json:"order_book"`
