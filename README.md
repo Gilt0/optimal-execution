@@ -120,7 +120,7 @@ will solve that issue.
 
 It should compute for an Implementation Shortfall, the appropriate strategy in time and its value. As a reminder, the problem to solve is some minimisation of
 
-$Qm_0 - Q \bar s - \left( q_0m_0 + \int_{0}^{q_0} F^{-1}\left(\chi\right)d\chi \right) - \dots - \left( q_{N - 1}m_{N - 1} + \int_{0}^{q_{N - 1}} F^{-1}\left(\chi\right)d\chi \right)$ with the constraint that $q_0 + \dots + q_{N - 1} = Q$.
+$\left( q_0m_0 + \int_{0}^{q_0} F^{-1}\left(\chi\right)d\chi \right) - \dots - \left( q_{N - 1}m_{N - 1} + \int_{0}^{q_{N - 1}} F^{-1}\left(\chi\right)d\chi \right)$ with the constraint that $q_0 + \dots + q_{N - 1} = Q$.
 
 ## Execution backtester
 
