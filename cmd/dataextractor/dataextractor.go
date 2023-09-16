@@ -81,17 +81,23 @@ type AggregatedData struct {
 	TotalAmount    float64 `json:"total_amount"`
 	TotalNumber    uint64  `json:"total_number"`
 	TotalVolume    float64 `json:"total_volume"`
-	BidTotalAmount float64 `json:"buy_total_amount"`
-	BidTotalNumber uint64  `json:"buy_total_number"`
-	BidTotalVolume float64 `json:"buy_total_volume"`
-	AskTotalAmount float64 `json:"sell_total_amount"`
-	AskTotalNumber uint64  `json:"sell_total_number"`
-	AskTotalVolume float64 `json:"sell_total_volume"`
+	OrderSize      float64 `json:"order_size"`
+	OrderAmount    float64 `json:"order_amount"`
+	BidTotalAmount float64 `json:"bid_total_amount"`
+	BidTotalNumber uint64  `json:"bid_total_number"`
+	BidTotalVolume float64 `json:"bid_total_volume"`
+	BidOrderSize   float64 `json:"bid_order_size"`
+	BidOrderAmount float64 `json:"bid_order_amount"`
+	AskTotalAmount float64 `json:"ask_total_amount"`
+	AskTotalNumber uint64  `json:"ask_total_number"`
+	AskTotalVolume float64 `json:"ask_total_volume"`
+	AskOrderSize   float64 `json:"ask_order_size"`
+	AskOrderAmount float64 `json:"ask_order_amount"`
+	BidTotalQty    float64 `json:"bid_total_qty"`
+	AskTotalQty    float64 `json:"ask_total_qty"`
+	BidMaxDelta    float64 `json:"bid_max_delta"`
+	AskMaxDelta    float64 `json:"ask_max_delta"`
 	MidPrice       float64 `json:"mid_price"`
-	BidTotalQty    float64 `json:"total_bid_qty"`
-	AskTotalQty    float64 `json:"total_ask_qty"`
-	MaxDeltaBid    float64 `json:"max_delta_bid"`
-	MaxDeltaAsk    float64 `json:"max_delta_ask"`
 }
 
 type OrderBookResponse struct {
@@ -158,12 +164,10 @@ func convertLevels(levels [][2]string) ([]OrderLevel, error) {
 	return result, nil
 }
 
-type CumulatedProfile []float64
+type CumulatedProfile [2]float64
 
 type ExtendedOrderBookResponse struct {
 	LastUpdateID int64              `json:"lastUpdateId"`
-	Bids         [][2]string        `json:"bids"`
-	Asks         [][2]string        `json:"asks"`
 	CumBids      []CumulatedProfile `json:"cumBids"`
 	CumAsks      []CumulatedProfile `json:"cumAsks"`
 }
@@ -191,6 +195,189 @@ func interpolateCumulatedProfile(profile []CumulatedProfile) []CumulatedProfile 
 	return interpolated
 }
 
+type AccumulatedData struct {
+	OrderSize      float64
+	OrderAmount    float64
+	BidOrderSize   float64
+	BidOrderAmount float64
+	BidTotalQty    float64
+	BidMaxDelta    float64
+	AskOrderSize   float64
+	AskOrderAmount float64
+	AskTotalQty    float64
+	AskMaxDelta    float64
+	CumBids        [INTERPOLATION_NB + 1]CumulatedProfile
+	CumAsks        [INTERPOLATION_NB + 1]CumulatedProfile
+}
+
+func processTrade(trade *TradeResponse, aggData *AggregatedData) {
+	aggData.LastTimestamp = trade.Tm
+	aggData.TotalAmount += trade.P * trade.Q
+	aggData.TotalVolume += trade.Q
+	aggData.TotalNumber++
+
+	if trade.M {
+		aggData.BidTotalAmount += trade.P * trade.Q
+		aggData.BidTotalVolume += trade.Q
+		aggData.BidTotalNumber++
+	} else {
+		aggData.AskTotalAmount += trade.P * trade.Q
+		aggData.AskTotalVolume += trade.Q
+		aggData.AskTotalNumber++
+	}
+}
+
+func updateAggDataOrderBook(aggData *AggregatedData, bids, asks []OrderLevel, mid float64) ([]CumulatedProfile, []CumulatedProfile) {
+	// Compute total quantities
+	BidtotalQty, AsktotalQty := 0.0, 0.0
+	for _, bid := range bids {
+		BidtotalQty += bid.Quantity
+	}
+	for _, ask := range asks {
+		AsktotalQty += ask.Quantity
+	}
+	aggData.BidTotalQty = BidtotalQty
+	aggData.AskTotalQty = AsktotalQty
+
+	// Compute cumulated profiles
+	cumulatedBidLiquidity := 0.0
+	BidmaxDelta := 0.0
+	var cumBids []CumulatedProfile
+	for _, bid := range bids {
+		delta := mid - bid.Price
+		if delta > BidmaxDelta {
+			BidmaxDelta = delta
+		}
+		cumulatedBidLiquidity += bid.Quantity
+		normalizedLiquidity := cumulatedBidLiquidity / BidtotalQty
+		cumBids = append(cumBids, CumulatedProfile{delta, normalizedLiquidity})
+	}
+
+	cumulatedAskLiquidity := 0.0
+	AskmaxDelta := 0.0
+	var cumAsks []CumulatedProfile
+	for _, ask := range asks {
+		delta := ask.Price - mid
+		if delta > AskmaxDelta {
+			AskmaxDelta = delta
+		}
+		cumulatedAskLiquidity += ask.Quantity
+		normalizedLiquidity := cumulatedAskLiquidity / AsktotalQty
+		cumAsks = append(cumAsks, CumulatedProfile{delta, normalizedLiquidity})
+	}
+
+	// Normalize deltas
+	for i := range cumBids {
+		cumBids[i][0] /= BidmaxDelta
+	}
+	for i := range cumAsks {
+		cumAsks[i][0] /= AskmaxDelta
+	}
+
+	aggData.BidMaxDelta = BidmaxDelta
+	aggData.AskMaxDelta = AskmaxDelta
+
+	if aggData.TotalNumber != 0 {
+		aggData.OrderSize = aggData.TotalVolume / float64(aggData.TotalNumber)
+		aggData.OrderAmount = aggData.TotalAmount / float64(aggData.TotalNumber)
+	}
+	if aggData.BidTotalNumber != 0 {
+		aggData.BidOrderSize = aggData.BidTotalVolume / float64(aggData.BidTotalNumber)
+		aggData.BidOrderAmount = aggData.BidTotalAmount / float64(aggData.BidTotalNumber)
+	}
+	if aggData.AskTotalNumber != 0 {
+		aggData.AskOrderSize = aggData.AskTotalVolume / float64(aggData.AskTotalNumber)
+		aggData.AskOrderAmount = aggData.AskTotalAmount / float64(aggData.AskTotalNumber)
+	}
+
+	return cumBids, cumAsks
+}
+
+func updateAccumulatedData(accumulatedData *AccumulatedData, aggData *AggregatedData, cumBids, cumAsks []CumulatedProfile) {
+	accumulatedData.OrderSize += aggData.OrderSize
+	accumulatedData.OrderAmount += aggData.OrderAmount
+	accumulatedData.BidOrderSize += aggData.BidOrderSize
+	accumulatedData.BidOrderAmount += aggData.BidOrderAmount
+	accumulatedData.BidTotalQty += aggData.BidTotalQty
+	accumulatedData.BidMaxDelta += aggData.BidMaxDelta
+	accumulatedData.AskOrderSize += aggData.AskOrderSize
+	accumulatedData.AskOrderAmount += aggData.AskOrderAmount
+	accumulatedData.AskTotalQty += aggData.AskTotalQty
+	accumulatedData.AskMaxDelta += aggData.AskMaxDelta
+
+	normalizedCumBids := interpolateCumulatedProfile(cumBids)
+	normalizedCumAsks := interpolateCumulatedProfile(cumAsks)
+
+	// Assuming cumBids and cumAsks have the same length
+	for i := range normalizedCumBids {
+		accumulatedData.CumBids[i][1] += normalizedCumBids[i][1] // accumulate the liquidity value
+		accumulatedData.CumAsks[i][1] += normalizedCumAsks[i][1]
+	}
+}
+
+func processTicker(aggData *AggregatedData, accumulatedData *AccumulatedData, totalTicks *int64) error {
+	orderBook, err := fetchOrderBook()
+	if err != nil {
+		return fmt.Errorf("error fetching order book: %v", err)
+	}
+	bids, err := convertLevels(orderBook.Bids)
+	if err != nil {
+		return fmt.Errorf("error converting bids: %v", err)
+	}
+	asks, err := convertLevels(orderBook.Asks)
+	if err != nil {
+		return fmt.Errorf("error converting asks: %v", err)
+	}
+	// Compute mid
+	mid := (bids[0].Price + asks[0].Price) / 2
+	aggData.MidPrice = mid
+	// Update aggData (OrderBook parts)
+	cumBids, cumAsks := updateAggDataOrderBook(aggData, bids, asks, mid)
+	// Update accumulatedData based on aggData
+	updateAccumulatedData(accumulatedData, aggData, cumBids, cumAsks)
+	*totalTicks += 1
+	fmt.Println("Processed tick:", *totalTicks)
+	return nil
+}
+
+func normalizeAccumulatedData(data *AccumulatedData, totalTicks int64) {
+	if totalTicks == 0 {
+		return
+	}
+
+	divisor := float64(totalTicks)
+	data.OrderSize /= divisor
+	data.OrderAmount /= divisor
+	data.BidOrderSize /= divisor
+	data.BidOrderAmount /= divisor
+	data.BidTotalQty /= divisor
+	data.BidMaxDelta /= divisor
+	data.AskOrderSize /= divisor
+	data.AskOrderAmount /= divisor
+	data.AskTotalQty /= divisor
+	data.AskMaxDelta /= divisor
+	for i := range data.CumBids {
+		data.CumBids[i][1] /= divisor
+		data.CumAsks[i][1] /= divisor
+	}
+}
+
+func processSignal(sig os.Signal, accumulatedData *AccumulatedData, totalTicks int64, processStartTime int64, json_path string, symbol string, throttle int) {
+	fmt.Println("Received signal:", sig)
+	processStopTime := time.Now().Unix()
+	normalizeAccumulatedData(accumulatedData, totalTicks)
+	// Save accumulated data
+	data, err := json.MarshalIndent(accumulatedData, "", "  ")
+	if err != nil {
+		log.Printf("Error marshalling accumulated data: %v", err)
+	}
+	filename := fmt.Sprintf("%v/capture_symbol=%v_throttle=%v_start=%d_end=%d.json", json_path, symbol, throttle, processStartTime, processStopTime)
+	if err := ioutil.WriteFile(filename, data, 0644); err != nil {
+		log.Printf("Error writing to file: %v", err)
+	}
+	fmt.Println("Shutting down gracefully...")
+}
+
 func main() {
 	fmt.Println("symbol: ", symbol, "json_path: ", json_path, "throttle: ", throttle)
 	trades := make(chan *TradeResponse)
@@ -198,116 +385,21 @@ func main() {
 	ticker := time.NewTicker(time.Duration(throttle) * time.Second)
 	defer ticker.Stop()
 	aggData := AggregatedData{}
+	var accumulatedData AccumulatedData
+	var processStartTime = time.Now().Unix()
+	var totalTicks int64 = 0
 	// Signal handling
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 	for {
 		select {
 		case trade := <-trades:
-			aggData.LastTimestamp = trade.Tm
-			aggData.TotalAmount += trade.P * trade.Q
-			aggData.TotalVolume += trade.Q
-			aggData.TotalNumber += 1
-			if trade.M {
-				aggData.BidTotalAmount += trade.P * trade.Q
-				aggData.BidTotalVolume += trade.Q
-				aggData.BidTotalNumber += 1
-			} else {
-				aggData.AskTotalAmount += trade.P * trade.Q
-				aggData.AskTotalVolume += trade.Q
-				aggData.AskTotalNumber += 1
-			}
+			processTrade(trade, &aggData)
 		case <-ticker.C:
-			orderBook, err := fetchOrderBook()
-			if err != nil {
-				log.Printf("Error fetching order book: %v", err)
-				continue
-			}
-			bids, err := convertLevels(orderBook.Bids)
-			if err != nil {
-				log.Printf("Error converting bids: %v", err)
-				continue
-			}
-			asks, err := convertLevels(orderBook.Asks)
-			if err != nil {
-				log.Printf("Error converting asks: %v", err)
-				continue
-			}
-			// Compute mid
-			mid := (bids[0].Price + asks[0].Price) / 2
-			aggData.MidPrice = mid
-			// Compute total quantities
-			BidtotalQty, AsktotalQty := 0.0, 0.0
-			for _, bid := range bids {
-				BidtotalQty += bid.Quantity
-			}
-			for _, ask := range asks {
-				AsktotalQty += ask.Quantity
-			}
-			aggData.BidTotalQty = BidtotalQty
-			aggData.AskTotalQty = AsktotalQty
-			// Compute cumulated profiles
-			cumulatedBidLiquidity := 0.0
-			maxDeltaBid := 0.0
-			var cumBids []CumulatedProfile
-			for _, bid := range bids {
-				delta := mid - bid.Price
-				if delta > maxDeltaBid {
-					maxDeltaBid = delta
-				}
-				cumulatedBidLiquidity += bid.Quantity
-				normalizedLiquidity := cumulatedBidLiquidity / BidtotalQty
-				cumBids = append(cumBids, CumulatedProfile{delta, normalizedLiquidity})
-			}
-			cumulatedAskLiquidity := 0.0
-			maxDeltaAsk := 0.0
-			var cumAsks []CumulatedProfile
-			for _, ask := range asks {
-				delta := ask.Price - mid
-				if delta > maxDeltaAsk {
-					maxDeltaAsk = delta
-				}
-				cumulatedAskLiquidity += ask.Quantity
-				normalizedLiquidity := cumulatedAskLiquidity / AsktotalQty
-				cumAsks = append(cumAsks, CumulatedProfile{delta, normalizedLiquidity})
-			}
-			// Normalize deltas
-			for i := range cumBids {
-				cumBids[i][0] /= maxDeltaBid
-			}
-			for i := range cumAsks {
-				cumAsks[i][0] /= maxDeltaAsk
-			}
-			aggData.MaxDeltaBid = maxDeltaBid
-			aggData.MaxDeltaAsk = maxDeltaAsk
-			// Merge data
-			extendedOrderBook := ExtendedOrderBookResponse{
-				LastUpdateID: orderBook.LastUpdateID,
-				Bids:         orderBook.Bids,
-				Asks:         orderBook.Asks,
-				CumBids:      interpolateCumulatedProfile(cumBids),
-				CumAsks:      interpolateCumulatedProfile(cumAsks),
-			}
-			mergedData := struct {
-				OrderBook      ExtendedOrderBookResponse `json:"order_book"`
-				AggregatedData AggregatedData            `json:"aggregated_data"`
-			}{
-				OrderBook:      extendedOrderBook,
-				AggregatedData: aggData,
-			}
-			data, err := json.MarshalIndent(mergedData, "", "  ")
-			if err != nil {
-				log.Printf("Error marshalling merged data: %v", err)
-				continue
-			}
-			filename := fmt.Sprintf("%v/data_ticker=%v_throttle=%v_timestamp=%d.json", json_path, symbol, throttle, time.Now().Unix())
-			if err := ioutil.WriteFile(filename, data, 0644); err != nil {
-				log.Printf("Error writing to file: %v", err)
-			}
+			processTicker(&aggData, &accumulatedData, &totalTicks)
 			aggData = AggregatedData{}
 		case sig := <-signals:
-			fmt.Println("Received signal:", sig)
-			fmt.Println("Shutting down gracefully...")
+			processSignal(sig, &accumulatedData, totalTicks, processStartTime, json_path, symbol, throttle)
 			return
 		}
 	}
