@@ -177,29 +177,6 @@ type ExtendedOrderBookResponse struct {
 	CumAsks      []CumulatedProfile `json:"cumAsks"`
 }
 
-// func interpolateCumulatedProfile(profile []CumulatedProfile) []CumulatedProfile {
-// 	interpolated := make([]CumulatedProfile, INTERPOLATION_NB+1)
-// 	const step = 1.0 / float64(INTERPOLATION_NB)
-// 	for i := 0; i <= INTERPOLATION_NB; i++ {
-// 		delta_i := float64(i) * step
-// 		if i == 0 {
-// 			interpolated[i] = CumulatedProfile{0, 0}
-// 		} else if i == INTERPOLATION_NB {
-// 			interpolated[i] = CumulatedProfile{1, 1}
-// 		} else {
-// 			for j := 0; j < len(profile)-1; j++ {
-// 				if profile[j][0] <= delta_i && profile[j+1][0] >= delta_i {
-// 					// Linear interpolation formula: y = y1 + (y2-y1) * (x-x1) / (x2-x1)
-// 					liquidity := profile[j][1] + (profile[j+1][1]-profile[j][1])*(delta_i-profile[j][0])/(profile[j+1][0]-profile[j][0])
-// 					interpolated[i] = CumulatedProfile{delta_i, liquidity}
-// 					break
-// 				}
-// 			}
-// 		}
-// 	}
-// 	return interpolated
-// }
-
 func interpolateCumulatedProfile(profile []CumulatedProfile) []CumulatedProfile {
 	// 99 points for the range 0.001 to 0.099
 	fineStep := 0.01 / float64(INTERPOLATION_NB)
