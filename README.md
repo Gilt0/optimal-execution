@@ -111,9 +111,9 @@ It should compute for an Implementation Shortfall, the appropriate strategy in t
 
 $Qm_0 - Q \bar s - \left( q_0m_0 + \int_{0}^{q_0} F^{-1}\left(\chi\right)d\chi \right) - \dots - \left( q_{N - 1}m_{N - 1} + \int_{0}^{q_{N - 1}} F^{-1}\left(\chi\right)d\chi \right)$ with the constraint that $q_0 + \dots + q_{N - 1} = Q$.
 
-More on medium for what to investigate.
-
 ## Execution backtester
 
 So here the task would be to try and get a feel for an actual task required as a quant trader: backtesting your strategy. I have done  nothing yet, altough with the stream feed from binance, one could use that data to provide some estimation of the strategy performance (VWAP and TWAP as well if you're game!).
 
+
+More on medium for instructions: _link to medium_
