@@ -107,6 +107,6 @@ The final output is what will provide you with the necessary data to compute the
 
 ## Pricer
 
-It should compute for an Implement Shortfall, the appropriate strategy in time and its value. As a reminder, the problem to solve is some minimisation of
+It should compute for an Implementation Shortfall, the appropriate strategy in time and its value. As a reminder, the problem to solve is some minimisation of
 
 $Qm_0 - Q \bar s - \left( q_nm_n + \int_{0}^{q_n} F^{-1}\left(\chi\right)d\chi \right) - \dots - \left( q_{N - 1}m_{N - 1} + \int_{0}^{q_{N - 1}} F^{-1}\left(\chi\right)d\chi \right)$
