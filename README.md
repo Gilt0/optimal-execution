@@ -105,6 +105,17 @@ with prints on the screen every `n=throttle` seconds, as defined above. When you
 ```
 The final output is what will provide you with the necessary data to compute the optimal execution.
 
+If you wish to have a binary you can play with just do 
+
+```bash
+go build -o bin/dataextractor cmd/dataextractor/dataextractor.go
+```
+if you do not have the `bin` folder yet a simple
+```bash
+mkdir bin
+```
+will solve that issue.
+
 ## Pricer
 
 It should compute for an Implementation Shortfall, the appropriate strategy in time and its value. As a reminder, the problem to solve is some minimisation of
