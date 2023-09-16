@@ -177,27 +177,65 @@ type ExtendedOrderBookResponse struct {
 	CumAsks      []CumulatedProfile `json:"cumAsks"`
 }
 
+// func interpolateCumulatedProfile(profile []CumulatedProfile) []CumulatedProfile {
+// 	interpolated := make([]CumulatedProfile, INTERPOLATION_NB+1)
+// 	const step = 1.0 / float64(INTERPOLATION_NB)
+// 	for i := 0; i <= INTERPOLATION_NB; i++ {
+// 		delta_i := float64(i) * step
+// 		if i == 0 {
+// 			interpolated[i] = CumulatedProfile{0, 0}
+// 		} else if i == INTERPOLATION_NB {
+// 			interpolated[i] = CumulatedProfile{1, 1}
+// 		} else {
+// 			for j := 0; j < len(profile)-1; j++ {
+// 				if profile[j][0] <= delta_i && profile[j+1][0] >= delta_i {
+// 					// Linear interpolation formula: y = y1 + (y2-y1) * (x-x1) / (x2-x1)
+// 					liquidity := profile[j][1] + (profile[j+1][1]-profile[j][1])*(delta_i-profile[j][0])/(profile[j+1][0]-profile[j][0])
+// 					interpolated[i] = CumulatedProfile{delta_i, liquidity}
+// 					break
+// 				}
+// 			}
+// 		}
+// 	}
+// 	return interpolated
+// }
+
 func interpolateCumulatedProfile(profile []CumulatedProfile) []CumulatedProfile {
-	interpolated := make([]CumulatedProfile, INTERPOLATION_NB+1)
-	const step = 1.0 / float64(INTERPOLATION_NB)
-	for i := 0; i <= INTERPOLATION_NB; i++ {
-		delta_i := float64(i) * step
-		if i == 0 {
-			interpolated[i] = CumulatedProfile{0, 0}
-		} else if i == INTERPOLATION_NB {
-			interpolated[i] = CumulatedProfile{1, 1}
-		} else {
-			for j := 0; j < len(profile)-1; j++ {
-				if profile[j][0] <= delta_i && profile[j+1][0] >= delta_i {
-					// Linear interpolation formula: y = y1 + (y2-y1) * (x-x1) / (x2-x1)
-					liquidity := profile[j][1] + (profile[j+1][1]-profile[j][1])*(delta_i-profile[j][0])/(profile[j+1][0]-profile[j][0])
-					interpolated[i] = CumulatedProfile{delta_i, liquidity}
-					break
-				}
-			}
+	// 99 points for the range 0.001 to 0.099
+	fineStep := 0.01 / float64(INTERPOLATION_NB)
+	remainingStep := 1.0 / float64(INTERPOLATION_NB)
+	interpolated := make([]CumulatedProfile, 2*INTERPOLATION_NB+1)
+	// Ensure at delta = 0, liquidity = 0
+	interpolated[0] = CumulatedProfile{0, 0}
+	i := 1
+	fmt.Println("i:", i)
+	// Handle the fine-grained points
+	for delta_i := 0.0001; delta_i < 0.01; delta_i += fineStep {
+		interpolated[i] = linearInterpolation(profile, delta_i)
+		i++
+		fmt.Println("i:", i)
+	}
+	// Handle the remaining points
+	for delta_i := 0.01; delta_i < 1.0; delta_i += remainingStep {
+		interpolated[i] = linearInterpolation(profile, delta_i)
+		i++
+		fmt.Println("i:", i)
+	}
+	// Ensure at delta = 1, liquidity = 1
+	interpolated[2*INTERPOLATION_NB] = CumulatedProfile{1, 1}
+	fmt.Println("out")
+	return interpolated
+}
+
+func linearInterpolation(profile []CumulatedProfile, delta_i float64) CumulatedProfile {
+	for j := 0; j < len(profile)-1; j++ {
+		if profile[j][0] <= delta_i && profile[j+1][0] >= delta_i {
+			// Linear interpolation formula: y = y1 + (y2-y1) * (x-x1) / (x2-x1)
+			liquidity := profile[j][1] + (profile[j+1][1]-profile[j][1])*(delta_i-profile[j][0])/(profile[j+1][0]-profile[j][0])
+			return CumulatedProfile{delta_i, liquidity}
 		}
 	}
-	return interpolated
+	return CumulatedProfile{delta_i, 1.0} // Default if not found in the given profile
 }
 
 type AccumulatedData struct {
@@ -212,8 +250,8 @@ type AccumulatedData struct {
 	AskOrderAmount float64
 	AskTotalQty    float64
 	AskMaxDelta    float64
-	CumBids        [INTERPOLATION_NB + 1]CumulatedProfile
-	CumAsks        [INTERPOLATION_NB + 1]CumulatedProfile
+	CumBids        [2*INTERPOLATION_NB + 1]CumulatedProfile
+	CumAsks        [2*INTERPOLATION_NB + 1]CumulatedProfile
 }
 
 func processTrade(trade *TradeResponse, aggData *AggregatedData) {
@@ -267,41 +305,57 @@ func computeSellPrice(bids []OrderLevel, orderSize float64) float64 {
 
 func updateAggDataOrderBook(aggData *AggregatedData, bids, asks []OrderLevel, mid float64) ([]CumulatedProfile, []CumulatedProfile) {
 	// Compute total quantities
-	BidtotalQty, AsktotalQty := 0.0, 0.0
+	BidTotalQty, AskTotalQty := 0.0, 0.0
 	for _, bid := range bids {
-		BidtotalQty += bid.Quantity
+		BidTotalQty += bid.Quantity
 	}
 	for _, ask := range asks {
-		AsktotalQty += ask.Quantity
+		AskTotalQty += ask.Quantity
 	}
-	aggData.BidTotalQty = BidtotalQty
-	aggData.AskTotalQty = AsktotalQty
+	aggData.BidTotalQty = 0.0
+	cumBidQty := 0.0
+	for _, bid := range bids {
+		cumBidQty += bid.Quantity
+		if cumBidQty < QUANTILE*BidTotalQty {
+			aggData.BidTotalQty = cumBidQty
+		} else {
+			break
+		}
+	}
+	aggData.AskTotalQty = 0.0
+	cumAskQty := 0.0
+	for _, Ask := range asks {
+		cumAskQty += Ask.Quantity
+		if cumAskQty < QUANTILE*AskTotalQty {
+			aggData.AskTotalQty = cumAskQty
+		} else {
+			break
+		}
+	}
 	// Compute cumulated profiles
 	cumulatedBidLiquidity := 0.0
-	BidmaxDelta := 0.0
-	thresholdBidLiquidity := QUANTILE * BidtotalQty
+	BidMaxDelta := 0.0
 	var cumBids []CumulatedProfile
 	for _, bid := range bids {
 		delta := mid - bid.Price
 		cumulatedBidLiquidity += bid.Quantity
-		normalizedLiquidity := cumulatedBidLiquidity / BidtotalQty
-		if cumulatedBidLiquidity <= thresholdBidLiquidity {
-			BidmaxDelta = delta
+		normalizedLiquidity := cumulatedBidLiquidity / aggData.BidTotalQty
+		if cumulatedBidLiquidity <= aggData.BidTotalQty {
+			BidMaxDelta = delta
 			cumBids = append(cumBids, CumulatedProfile{delta, normalizedLiquidity})
 		} else {
 			break
 		}
 	}
 	cumulatedAskLiquidity := 0.0
-	AskmaxDelta := 0.0
+	AskMaxDelta := 0.0
 	var cumAsks []CumulatedProfile
-	thresholdAskLiquidity := QUANTILE * AsktotalQty
 	for _, ask := range asks {
 		delta := ask.Price - mid
 		cumulatedAskLiquidity += ask.Quantity
-		normalizedLiquidity := cumulatedAskLiquidity / AsktotalQty
-		if cumulatedAskLiquidity <= thresholdAskLiquidity {
-			AskmaxDelta = delta
+		normalizedLiquidity := cumulatedAskLiquidity / aggData.AskTotalQty
+		if cumulatedAskLiquidity <= aggData.AskTotalQty {
+			AskMaxDelta = delta
 			cumAsks = append(cumAsks, CumulatedProfile{delta, normalizedLiquidity})
 		} else {
 			break
@@ -309,13 +363,13 @@ func updateAggDataOrderBook(aggData *AggregatedData, bids, asks []OrderLevel, mi
 	}
 	// Normalize deltas
 	for i := range cumBids {
-		cumBids[i][0] /= BidmaxDelta
+		cumBids[i][0] /= BidMaxDelta
 	}
 	for i := range cumAsks {
-		cumAsks[i][0] /= AskmaxDelta
+		cumAsks[i][0] /= AskMaxDelta
 	}
-	aggData.BidMaxDelta = BidmaxDelta
-	aggData.AskMaxDelta = AskmaxDelta
+	aggData.BidMaxDelta = BidMaxDelta
+	aggData.AskMaxDelta = AskMaxDelta
 	if aggData.TotalNumber != 0 {
 		aggData.OrderSize = aggData.TotalVolume / float64(aggData.TotalNumber)
 		aggData.OrderAmount = aggData.TotalAmount / float64(aggData.TotalNumber)
@@ -441,7 +495,9 @@ func processTicker(aggData *AggregatedData, accumulatedData *AccumulatedData, to
 	updateAccumulatedData(accumulatedData, aggData, cumBids, cumAsks)
 	*totalTicks += 1
 	fmt.Println(">>> Processed tick:", *totalTicks)
+	printAggData(aggData)
 	printOrderBook(orderBook)
+	fmt.Println("<<<")
 	return nil
 }
 
