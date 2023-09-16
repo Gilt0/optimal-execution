@@ -18,14 +18,16 @@ import (
 )
 
 const (
-	WS_ENDPOINT       = "wss://stream.binance.com:9443/ws/"
-	REST_ENDPOINT     = "https://api.binance.com/api/v3/depth"
-	LIMIT             = 5000
-	SECOND            = 1000000000
-	DEFAULT_THROTTLE  = 5
-	DEFAULT_JSON_PATH = "./"
-	EMPTY             = ""
-	INTERPOLATION_NB  = 100
+	WS_ENDPOINT             = "wss://stream.binance.com:9443/ws/"
+	REST_ENDPOINT           = "https://api.binance.com/api/v3/depth"
+	DEFAULT_JSON_PATH       = "./"
+	EMPTY                   = ""
+	LIMIT                   = 5000
+	DEFAULT_THROTTLE        = 5
+	INTERPOLATION_NB        = 100
+	ORDERBOOK_PRINT_LINE_NB = 5
+	BIPS                    = 10000
+	QUANTILE                = 0.95
 )
 
 var (
@@ -98,6 +100,9 @@ type AggregatedData struct {
 	BidMaxDelta    float64 `json:"bid_max_delta"`
 	AskMaxDelta    float64 `json:"ask_max_delta"`
 	MidPrice       float64 `json:"mid_price"`
+	BuyPrice       float64 `json:"buy_price"`
+	SellPrice      float64 `json:"sell_price"`
+	Spread         float64 `json:"spread"`
 }
 
 type OrderBookResponse struct {
@@ -196,6 +201,7 @@ func interpolateCumulatedProfile(profile []CumulatedProfile) []CumulatedProfile 
 }
 
 type AccumulatedData struct {
+	Spread         float64
 	OrderSize      float64
 	OrderAmount    float64
 	BidOrderSize   float64
@@ -227,6 +233,38 @@ func processTrade(trade *TradeResponse, aggData *AggregatedData) {
 	}
 }
 
+// Computes the average execution price on the ask for an order of size orderSize
+func computeBuyPrice(asks []OrderLevel, orderSize float64) float64 {
+	totalAmount := 0.0
+	totalQty := 0.0
+	for _, ask := range asks {
+		totalQty += ask.Quantity
+		totalAmount += ask.Quantity * ask.Price
+		if totalQty >= orderSize {
+			remainingQty := totalQty - orderSize
+			totalAmount -= remainingQty * ask.Price
+			return totalAmount / (totalQty - remainingQty)
+		}
+	}
+	return 0 // This indicates that there's not enough liquidity to fill the order
+}
+
+// Computes the average execution price on the bid for an order of size orderSize
+func computeSellPrice(bids []OrderLevel, orderSize float64) float64 {
+	totalAmount := 0.0
+	totalQty := 0.0
+	for _, bid := range bids {
+		totalQty += bid.Quantity
+		totalAmount += bid.Quantity * bid.Price
+		if totalQty >= orderSize {
+			remainingQty := totalQty - orderSize
+			totalAmount -= remainingQty * bid.Price
+			return totalAmount / (totalQty - remainingQty)
+		}
+	}
+	return 0 // This indicates that there's not enough liquidity to fill the order
+}
+
 func updateAggDataOrderBook(aggData *AggregatedData, bids, asks []OrderLevel, mid float64) ([]CumulatedProfile, []CumulatedProfile) {
 	// Compute total quantities
 	BidtotalQty, AsktotalQty := 0.0, 0.0
@@ -238,34 +276,37 @@ func updateAggDataOrderBook(aggData *AggregatedData, bids, asks []OrderLevel, mi
 	}
 	aggData.BidTotalQty = BidtotalQty
 	aggData.AskTotalQty = AsktotalQty
-
 	// Compute cumulated profiles
 	cumulatedBidLiquidity := 0.0
 	BidmaxDelta := 0.0
+	thresholdBidLiquidity := QUANTILE * BidtotalQty
 	var cumBids []CumulatedProfile
 	for _, bid := range bids {
 		delta := mid - bid.Price
-		if delta > BidmaxDelta {
-			BidmaxDelta = delta
-		}
 		cumulatedBidLiquidity += bid.Quantity
 		normalizedLiquidity := cumulatedBidLiquidity / BidtotalQty
-		cumBids = append(cumBids, CumulatedProfile{delta, normalizedLiquidity})
+		if cumulatedBidLiquidity <= thresholdBidLiquidity {
+			BidmaxDelta = delta
+			cumBids = append(cumBids, CumulatedProfile{delta, normalizedLiquidity})
+		} else {
+			break
+		}
 	}
-
 	cumulatedAskLiquidity := 0.0
 	AskmaxDelta := 0.0
 	var cumAsks []CumulatedProfile
+	thresholdAskLiquidity := QUANTILE * AsktotalQty
 	for _, ask := range asks {
 		delta := ask.Price - mid
-		if delta > AskmaxDelta {
-			AskmaxDelta = delta
-		}
 		cumulatedAskLiquidity += ask.Quantity
 		normalizedLiquidity := cumulatedAskLiquidity / AsktotalQty
-		cumAsks = append(cumAsks, CumulatedProfile{delta, normalizedLiquidity})
+		if cumulatedAskLiquidity <= thresholdAskLiquidity {
+			AskmaxDelta = delta
+			cumAsks = append(cumAsks, CumulatedProfile{delta, normalizedLiquidity})
+		} else {
+			break
+		}
 	}
-
 	// Normalize deltas
 	for i := range cumBids {
 		cumBids[i][0] /= BidmaxDelta
@@ -273,10 +314,8 @@ func updateAggDataOrderBook(aggData *AggregatedData, bids, asks []OrderLevel, mi
 	for i := range cumAsks {
 		cumAsks[i][0] /= AskmaxDelta
 	}
-
 	aggData.BidMaxDelta = BidmaxDelta
 	aggData.AskMaxDelta = AskmaxDelta
-
 	if aggData.TotalNumber != 0 {
 		aggData.OrderSize = aggData.TotalVolume / float64(aggData.TotalNumber)
 		aggData.OrderAmount = aggData.TotalAmount / float64(aggData.TotalNumber)
@@ -289,7 +328,22 @@ func updateAggDataOrderBook(aggData *AggregatedData, bids, asks []OrderLevel, mi
 		aggData.AskOrderSize = aggData.AskTotalVolume / float64(aggData.AskTotalNumber)
 		aggData.AskOrderAmount = aggData.AskTotalAmount / float64(aggData.AskTotalNumber)
 	}
-
+	if aggData.AskTotalAmount == 0.0 {
+		aggData.AskTotalAmount = aggData.TotalAmount
+		aggData.AskTotalVolume = aggData.TotalVolume
+		aggData.AskTotalNumber = aggData.TotalNumber
+	}
+	if aggData.BidTotalAmount == 0.0 {
+		aggData.BidTotalAmount = aggData.TotalAmount
+		aggData.BidTotalVolume = aggData.TotalVolume
+		aggData.BidTotalNumber = aggData.TotalNumber
+	}
+	// Compute spread based on average execution prices
+	buyPrice := computeBuyPrice(asks, aggData.AskOrderSize)
+	sellPrice := computeSellPrice(bids, aggData.BidOrderSize)
+	aggData.BuyPrice = buyPrice
+	aggData.SellPrice = sellPrice
+	aggData.Spread = 2.0 * (buyPrice - sellPrice) / mid * BIPS
 	return cumBids, cumAsks
 }
 
@@ -304,15 +358,65 @@ func updateAccumulatedData(accumulatedData *AccumulatedData, aggData *Aggregated
 	accumulatedData.AskOrderAmount += aggData.AskOrderAmount
 	accumulatedData.AskTotalQty += aggData.AskTotalQty
 	accumulatedData.AskMaxDelta += aggData.AskMaxDelta
-
+	accumulatedData.Spread += aggData.Spread
 	normalizedCumBids := interpolateCumulatedProfile(cumBids)
 	normalizedCumAsks := interpolateCumulatedProfile(cumAsks)
-
 	// Assuming cumBids and cumAsks have the same length
 	for i := range normalizedCumBids {
+		accumulatedData.CumBids[i][0] += normalizedCumBids[i][0] // accumulate the liquidity value
+		accumulatedData.CumAsks[i][0] += normalizedCumAsks[i][0]
 		accumulatedData.CumBids[i][1] += normalizedCumBids[i][1] // accumulate the liquidity value
 		accumulatedData.CumAsks[i][1] += normalizedCumAsks[i][1]
 	}
+}
+
+func printAggData(data *AggregatedData) {
+	fmt.Println("------------ Aggregated Data ------------")
+	fmt.Printf("Last Timestamp: %v\n", data.LastTimestamp)
+	fmt.Printf("Total Amount: %f\n", data.TotalAmount)
+	fmt.Printf("Total Number: %d\n", data.TotalNumber)
+	fmt.Printf("Total Volume: %f\n", data.TotalVolume)
+	fmt.Printf("BuyPrice: %f\n", data.BuyPrice)
+	fmt.Printf("SellPrice: %f\n", data.SellPrice)
+	fmt.Printf("Mid Price: %f\n", data.MidPrice)
+	fmt.Printf("Spread: %f\n", data.Spread)
+	fmt.Printf("Order Size: %f\n", data.OrderSize)
+	fmt.Printf("Order Amount: %f\n", data.OrderAmount)
+	fmt.Printf("Bid Total Amount: %f\n", data.BidTotalAmount)
+	fmt.Printf("Bid Total Number: %d\n", data.BidTotalNumber)
+	fmt.Printf("Bid Total Volume: %f\n", data.BidTotalVolume)
+	fmt.Printf("Bid Order Size: %f\n", data.BidOrderSize)
+	fmt.Printf("Bid Order Amount: %f\n", data.BidOrderAmount)
+	fmt.Printf("Ask Total Amount: %f\n", data.AskTotalAmount)
+	fmt.Printf("Ask Total Number: %d\n", data.AskTotalNumber)
+	fmt.Printf("Ask Total Volume: %f\n", data.AskTotalVolume)
+	fmt.Printf("Ask Order Size: %f\n", data.AskOrderSize)
+	fmt.Printf("Ask Order Amount: %f\n", data.AskOrderAmount)
+	fmt.Printf("Bid Total Quantity: %f\n", data.BidTotalQty)
+	fmt.Printf("Ask Total Quantity: %f\n", data.AskTotalQty)
+	fmt.Printf("Bid Max Delta: %f\n", data.BidMaxDelta)
+	fmt.Printf("Ask Max Delta: %f\n", data.AskMaxDelta)
+	fmt.Println("-----------------------------------------")
+}
+
+func printOrderBook(data *OrderBookResponse) {
+	fmt.Println("------------ Order Book Data ------------")
+	fmt.Printf("Last Update ID: %d\n", data.LastUpdateID)
+	fmt.Println("Bids:")
+	for i, bid := range data.Bids {
+		if i >= ORDERBOOK_PRINT_LINE_NB {
+			break
+		}
+		fmt.Printf("Price: %s, Quantity: %s\n", bid[0], bid[1])
+	}
+	fmt.Println("Asks:")
+	for i, ask := range data.Asks {
+		if i >= ORDERBOOK_PRINT_LINE_NB {
+			break
+		}
+		fmt.Printf("Price: %s, Quantity: %s\n", ask[0], ask[1])
+	}
+	fmt.Println("-----------------------------------------")
 }
 
 func processTicker(aggData *AggregatedData, accumulatedData *AccumulatedData, totalTicks *int64) error {
@@ -336,7 +440,8 @@ func processTicker(aggData *AggregatedData, accumulatedData *AccumulatedData, to
 	// Update accumulatedData based on aggData
 	updateAccumulatedData(accumulatedData, aggData, cumBids, cumAsks)
 	*totalTicks += 1
-	fmt.Println("Processed tick:", *totalTicks)
+	fmt.Println(">>> Processed tick:", *totalTicks)
+	printOrderBook(orderBook)
 	return nil
 }
 
@@ -344,22 +449,54 @@ func normalizeAccumulatedData(data *AccumulatedData, totalTicks int64) {
 	if totalTicks == 0 {
 		return
 	}
-
-	divisor := float64(totalTicks)
-	data.OrderSize /= divisor
-	data.OrderAmount /= divisor
-	data.BidOrderSize /= divisor
-	data.BidOrderAmount /= divisor
-	data.BidTotalQty /= divisor
-	data.BidMaxDelta /= divisor
-	data.AskOrderSize /= divisor
-	data.AskOrderAmount /= divisor
-	data.AskTotalQty /= divisor
-	data.AskMaxDelta /= divisor
+	coef := 1.0 / float64(totalTicks)
+	data.OrderSize *= coef
+	data.OrderAmount *= coef
+	data.BidOrderSize *= coef
+	data.BidOrderAmount *= coef
+	data.BidTotalQty *= coef
+	data.BidMaxDelta *= coef
+	data.AskOrderSize *= coef
+	data.AskOrderAmount *= coef
+	data.AskTotalQty *= coef
+	data.AskMaxDelta *= coef
+	data.Spread *= coef
 	for i := range data.CumBids {
-		data.CumBids[i][1] /= divisor
-		data.CumAsks[i][1] /= divisor
+		data.CumBids[i][0] *= coef
+		data.CumAsks[i][0] *= coef
+		data.CumBids[i][1] *= coef
+		data.CumAsks[i][1] *= coef
 	}
+}
+
+func printAccumulatedData(data *AccumulatedData) {
+	fmt.Printf("Total Spread: %f\n", data.Spread)
+	fmt.Println("---------- Accumulated Data ----------")
+	fmt.Printf("Order Size: %f\n", data.OrderSize)
+	fmt.Printf("Order Amount: %f\n", data.OrderAmount)
+	fmt.Printf("Bid Order Size: %f\n", data.BidOrderSize)
+	fmt.Printf("Bid Order Amount: %f\n", data.BidOrderAmount)
+	fmt.Printf("Bid Total Quantity: %f\n", data.BidTotalQty)
+	fmt.Printf("Bid Max Delta: %f\n", data.BidMaxDelta)
+	fmt.Printf("Ask Order Size: %f\n", data.AskOrderSize)
+	fmt.Printf("Ask Order Amount: %f\n", data.AskOrderAmount)
+	fmt.Printf("Ask Total Quantity: %f\n", data.AskTotalQty)
+	fmt.Printf("Ask Max Delta: %f\n", data.AskMaxDelta)
+	fmt.Println("Cumulative Bids:")
+	for i, bid := range data.CumBids {
+		if i >= ORDERBOOK_PRINT_LINE_NB {
+			break
+		}
+		fmt.Printf("Delta: %f, Liquidity: %f\n", bid[0], bid[1])
+	}
+	fmt.Println("Cumulative Asks:")
+	for i, ask := range data.CumAsks {
+		if i >= ORDERBOOK_PRINT_LINE_NB {
+			break
+		}
+		fmt.Printf("Delta: %f, Liquidity: %f\n", ask[0], ask[1])
+	}
+	fmt.Println("-------------------------------------")
 }
 
 func processSignal(sig os.Signal, accumulatedData *AccumulatedData, totalTicks int64, processStartTime int64, json_path string, symbol string, throttle int) {
@@ -371,6 +508,7 @@ func processSignal(sig os.Signal, accumulatedData *AccumulatedData, totalTicks i
 	if err != nil {
 		log.Printf("Error marshalling accumulated data: %v", err)
 	}
+	printAccumulatedData(accumulatedData)
 	filename := fmt.Sprintf("%v/capture_symbol=%v_throttle=%v_start=%d_end=%d.json", json_path, symbol, throttle, processStartTime, processStopTime)
 	if err := ioutil.WriteFile(filename, data, 0644); err != nil {
 		log.Printf("Error writing to file: %v", err)
