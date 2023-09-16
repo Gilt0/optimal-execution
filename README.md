@@ -2,6 +2,7 @@
 
 In this project, I started with a data extractor on binance. It provides an output like
 
+```javascript
 {
   "Spread": 0.007543766220855038,
   "OrderSize": 0.006236945827489481,
@@ -41,3 +42,6 @@ In this project, I started with a data extractor on binance. It provides an outp
     ...
   ]
 }
+```
+
+
