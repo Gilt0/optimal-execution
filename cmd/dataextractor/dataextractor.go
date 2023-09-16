@@ -185,7 +185,6 @@ func interpolateCumulatedProfile(profile []CumulatedProfile) []CumulatedProfile 
 	// Ensure at delta = 0, liquidity = 0
 	interpolated[0] = CumulatedProfile{0, 0}
 	i := 1
-	fmt.Println("i:", i)
 	// Handle the fine-grained points
 	for delta_i := 0.0001; delta_i < 0.01; delta_i += fineStep {
 		interpolated[i] = linearInterpolation(profile, delta_i)
