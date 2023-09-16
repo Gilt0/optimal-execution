@@ -60,7 +60,7 @@ Price: 26533.67000000, Quantity: 0.10396000
 <<<
 ...
 ```
-with prints on the screen every `n=throttle` seconds, as defined above. When you stop the extraction, a file is saved in data/json in the format `capture_symbol=BTCUSDT_throttle=5_start=1694867262_end=1694867272.json` where the timestamp will obviously be the ones of your start of the process and when when you stopped it.
+with prints on the screen every `n=throttle` seconds, as defined above. When you stop the extraction, a file is saved in data/json in the format `capture_symbol=BTCUSDT_throttle=5_start=1694867262_end=1694867272.json` where the timestamp will obviously be the ones of your start of the process and your end of it.
 
 ```javascript
 {
@@ -103,5 +103,10 @@ with prints on the screen every `n=throttle` seconds, as defined above. When you
   ]
 }
 ```
+The final output is what will provide you with the necessary data to compute the optimal execution.
 
+## Pricer
 
+It should compute for an Implement Shortfall, the appropriate strategy in time and its value. As a reminder, the problem to solve is 
+
+$\mathcal C$
