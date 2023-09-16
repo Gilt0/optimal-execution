@@ -197,7 +197,6 @@ func interpolateCumulatedProfile(profile []CumulatedProfile) []CumulatedProfile 
 	}
 	// Ensure at delta = 1, liquidity = 1
 	interpolated[2*INTERPOLATION_NB] = CumulatedProfile{1, 1}
-	fmt.Println("out")
 	return interpolated
 }
 
