@@ -109,4 +109,4 @@ The final output is what will provide you with the necessary data to compute the
 
 It should compute for an Implement Shortfall, the appropriate strategy in time and its value. As a reminder, the problem to solve is 
 
-$\min_{q_0, \dots, q_{N - 1}, N} \mathcal C\left(q_0, \dots, q_{N - 1}, N) = Qm_0 - Q \left< s \right> - \sum_{n = 0}^{N - 1}\left( q_nm_n - \int_{0}^{q_n} F^{-1}\left(\chi\right)d\chi \right)$
+$\min_{q_0, \dots, q_{N - 1}, N} \mathcal C\left(q_0, \dots, q_{N - 1}, N\right) = Qm_0 - Q \left< s \right>- \sum_{n = 0}^{N - 1}\left( q_nm_n - \int_{0}^{q_n} F^{-1}\left(\chi\right)d\chi \right)$
