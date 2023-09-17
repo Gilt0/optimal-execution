@@ -1,6 +1,6 @@
 # optimal-execution
 
-In this project, I started with a data extractor on binance. And I am happy to have contributors to implement aan execution system. The objective is mainly educational so have fun!
+In this project, I started with a data extractor on binance. And I am happy to have contributors to implement a mock execution system. The objective is mainly educational so have fun!
 
 ## Data Extraction
 Once you've pulled the repo, create a folder data/json from the root of the project
